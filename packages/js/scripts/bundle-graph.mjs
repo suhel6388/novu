@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +7,52 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageDir = path.resolve(__dirname, '..');
 const require = createRequire(path.join(packageDir, 'package.json'));
 const esbuild = require(require.resolve('esbuild', { paths: [require.resolve('tsup/package.json')] }));
+
+/**
+ * `solid-js` reaches its browser build only through the `browser` condition of its `exports` map; its
+ * `main`/`module` fields point at the server build. A bundler that does not evaluate that condition
+ * (Meteor, some older webpack/rollup setups) resolves the bare import to the server build and the Inbox
+ * throws "Client-only API called on the server side". The published `ui`/`ui-core` entries must therefore
+ * carry their own Solid runtime instead of leaving these packages external.
+ */
+const solidRuntimeSpecifier =
+  /\b(?:from|import|require)\s*\(?\s*["']((?:solid-js|@kobalte\/|solid-floating-ui|solid-motionone)(?:\/[^"']*)?)["']/;
+
+function collectBuildFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return collectBuildFiles(entryPath);
+    }
+
+    return /\.(?:mjs|cjs|js)$/.test(entry.name) && !/\.d\.(?:ts|mts|cts)$/.test(entry.name) ? [entryPath] : [];
+  });
+}
+
+function assertSolidRuntimeIsBundled() {
+  const distDir = path.join(packageDir, 'dist');
+  if (!fs.existsSync(distDir)) {
+    throw new Error('@novu/js dist is missing; run the build before the bundle-graph check');
+  }
+
+  const failures = [];
+  for (const filePath of collectBuildFiles(distDir)) {
+    const match = solidRuntimeSpecifier.exec(fs.readFileSync(filePath, 'utf8'));
+    if (match) {
+      failures.push(`${path.relative(packageDir, filePath)} still imports "${match[1]}"`);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `@novu/js bundle-graph left the Solid runtime external:\n  - ${failures.join(
+        '\n  - '
+      )}\nBundle it so consumers that ignore the "browser" export condition do not resolve solid-js to its server build.`
+    );
+  }
+
+  console.log('@novu/js bundle-graph "solid-runtime" passed');
+}
 
 const fixtures = {
   'inbox-only': {
@@ -121,6 +168,8 @@ function assertBundle(name, bundle, rules) {
 }
 
 async function main() {
+  assertSolidRuntimeIsBundled();
+
   for (const [name, rules] of Object.entries(fixtures)) {
     const bundle = await bundleFixture(name);
     assertBundle(name, bundle, rules);
