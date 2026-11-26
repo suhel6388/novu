@@ -54,16 +54,30 @@ const baseConfig: Options = {
   ],
 };
 
+/**
+ * Solid and the Solid-aware UI dependencies are bundled instead of left external.
+ *
+ * `solid-js` only reaches its browser build through the `browser` condition of its `exports` map; its
+ * `main`/`module` fields point at the server build. Bundlers that do not evaluate that condition
+ * (Meteor, some older webpack/rollup setups) therefore resolve `solid-js` to the server build, where
+ * `render`/`template`/`delegateEvents` throw "Client-only API called on the server side". Bundling the
+ * Solid runtime and every dependency that creates signals with it keeps the `ui`/`ui-core` entries
+ * self-contained and on a single Solid instance for every consumer.
+ */
+const solidRuntime = [/^solid-js(\/|$)/, /^@kobalte\//, /^solid-floating-ui$/, /^solid-motionone$/];
+
 const baseModuleConfig: Options = {
   ...baseConfig,
   treeshake: true,
+  // `browser` makes esbuild resolve the bundled Solid packages to their browser builds.
+  platform: 'browser',
   dts: {
     resolve: ['@novu/agent-event-protocol'],
     compilerOptions: {
       stripInternal: true,
     },
   },
-  noExternal: ['@novu/agent-event-protocol'],
+  noExternal: ['@novu/agent-event-protocol', ...solidRuntime],
   entry: {
     index: './src/index.ts',
     'ui/index': './src/ui/index.ts',
